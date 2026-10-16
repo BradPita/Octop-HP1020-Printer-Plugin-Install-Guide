@@ -1,0 +1,7 @@
+id: printer-cups
+version: 1.0.0
+name: 打印机 (CUPS)
+description: 通过本机 CUPS 打印文件、查看打印机与打印队列
+icon: "🖨️"
+kind: tool
+entry: main.py

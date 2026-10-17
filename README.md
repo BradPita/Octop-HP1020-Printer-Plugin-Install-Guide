@@ -1,5 +1,7 @@
 # printer-cups 打印機安裝指引（Octop Agent 版）
 
+**繁體中文** ｜ [简体中文](README.zh-CN.md) ｜ [English](README.en.md)
+
 > **這份文檔給誰看？** 給 **新 Octop 設備上的 Agent** 看。用戶大概會講一句「照這個指引把打印機接上」——你就照著一步步來。
 > **怎麼用最省力：** 從第 1 步開始逐步執行；每步都給**可直接粘貼跑的指令**。第 5 步兩步重載完，跑一次第 6 步的一條龍腳本，看到「**✅ 通過 N 項 · ❌ 失敗 0 項 / 🎉 全綠**」＝大功告成。
 > **本指引已在 Debian/Ubuntu 系 x86_64 機器實測通過**（示例環境：Linux Mint 22.3，2026-10）。
@@ -10,14 +12,25 @@
 - 0. 背景：CUPS 是什麼、裝完得到什麼
 - 1. 前置檢查（新設備先跑這一段確認環境 OK）
 - 2. 安裝 CUPS ＋ 驅動，並註冊打印機（Debian/Ubuntu 系實例）
-- 3. 建立 printer-cups 插件（含 plugin.yaml ＋ main.py 全文）
+- 3. 安裝插件（複製本倉庫的 plugin/）
 - 4. 寫全域預設機（~/.octop/env）
 - 5. 重載進運行時（octop plugin reload ＋ agent reload）
-- 6. 端到端驗證（一條龍全綠腳本 printer-cups-verify-all.py）
+- 6. 端到端驗證（scripts/printer-cups-verify-all.py）
 - 7. 用法速查（4 個工具怎麼調）
 - 8. 除錯手冊（本機實踩 ＋ 常見坑）
 - 9. 回滾／升級注意
 - 附錄 A：檔案與路徑速查；附錄 B：最小冒煙一行命令
+
+### 本倉庫檔案
+
+| 路徑 | 內容 |
+|---|---|
+| `README.md` / `README.zh-CN.md` / `README.en.md` | 本指引的繁中／簡中／英文版 |
+| `plugin/plugin.yaml` | 插件清單（7 行） |
+| `plugin/main.py` | 插件本體（187 行，含 4 個打印工具） |
+| `scripts/printer-cups-verify-all.py` | 一條龍端到端驗證腳本 |
+
+> 本倉庫所有中文（含程式碼註解）統一為**繁體中文**；簡中與英文版指引以連結指向同一份程式碼，避免同一份文件內簡繁混用。
 
 ---
 
@@ -167,233 +180,34 @@ device for hp1020: usb://HP/LaserJet%201020?serial=S44PJCF
 
 ---
 
-## 3. 建立 printer-cups 插件（含 plugin.yaml ＋ main.py 全文）
+## 3. 安裝插件（複製本倉庫的 plugin/）
 
-把那 3 條命令封裝成一個 octop 插件：放在 `~/.octop/plugins/printer-cups/`，一個 `plugin.yaml`（清單／元資料）＋ 一個 `main.py`（實現＋註冊那 4 個工具）。
+Octop 插件就是 `~/.octop/plugins/<id>/` 下的一個目錄，內含兩份檔案：
 
-> **octop 插件合同（本插件就是 browser-lightpanda 那份指引引用的「範本」）**：`~/.octop/plugins/<id>/` 下兩件——
-> - `plugin.yaml`（清單，7 行）：`id / version / name / description / icon / kind: tool / entry: main.py`。
-> - `main.py`（實現＋註冊，187 行）：每個工具是 **`async def`**（docstring＝給模型看的描述、參數帶預設值）；底部 `def setup(ctx)` 用 `ctx.tool("名字", 函數, description=...)` 逐個掛載；配置走 `get_tool_config`（個人層 per-tool config ＞ 全域 env 分層）。
+- **`plugin.yaml`**（清單，7 行）：`id / version / name / description / icon / kind: tool / entry: main.py`。
+- **`main.py`**（本體，187 行）：每個工具都是 **`async def`**（docstring 即給模型看的描述、參數帶預設值）；底部 `def setup(ctx)` 用 `ctx.tool("名字", 函數, description=...)` 逐個掛載那 4 個打印工具。本插件**零第三方依賴**——只調系統自帶的 `lp`／`lpstat`／`cancel`（本插件也是 browser-lightpanda 那份指引引用的「插件範本」）。
 
-目錄結構：
-```
-~/.octop/plugins/printer-cups/
-├── plugin.yaml     # 清單（7 行）
-└── main.py           # 實現 ＋ 4 個打印工具註冊（187 行）
-```
+**安裝動作**＝把本倉庫 `plugin/` 下的兩份檔案複製到 `~/.octop/plugins/printer-cups/`：
 
-### 3.1 plugin.yaml（全文 · 7 行 · 原樣照抄）
+```bash
+# 若你已 clone 本倉庫（<repo> 為倉庫路徑）
+mkdir -p ~/.octop/plugins/printer-cups
+cp <repo>/plugin/plugin.yaml ~/.octop/plugins/printer-cups/
+cp <repo>/plugin/main.py     ~/.octop/plugins/printer-cups/
 
-```yaml
-id: printer-cups
-version: 1.0.0
-name: 打印机 (CUPS)
-description: 通过本机 CUPS 打印文件、查看打印机与打印队列
-icon: "🖨️"
-kind: tool
-entry: main.py
+# 確認落地＋語法冒煙
+ls -l ~/.octop/plugins/printer-cups/
+~/.octop/venv/bin/python -m py_compile ~/.octop/plugins/printer-cups/main.py && echo "SYNTAX OK"
 ```
 
-### 3.2 main.py（核心 · 187 行 · **整段原樣照抄**，別漏行）
+> 沒有 clone 的話，直接用 GitHub 頁面把 `plugin/plugin.yaml` 與 `plugin/main.py` 另存到上述目錄即可（**整段原樣存**，別漏行）。
 
-這是本體：**只靠系統自帶的 `lp`／`lpstat`／`cancel`**（無第三方依賴），加兩層白名單（允許目錄 `DEFAULT_ALLOWED_PATHS`、允許副後綴 `ALLOWED_SUFFIXES`）、打印前可選灌固件（`FIRMWARE_SCRIPT`），掛 4 個工具。整段原樣寫入 `~/.octop/plugins/printer-cups/main.py`：
+**`main.py` 結構速覽**（187 行不用背，看懂改碼處即可）：
 
-```python
-"""printer-cups —— Octop 打印插件（kind=tool）
-
-让 Octop 的专家可以直接打印本机 CUPS 里的文件。
-只调用系统自带的 lp / lpstat / cancel，无第三方依赖。
-"""
-import asyncio
-import os
-import shutil
-from pathlib import Path
-
-from octop_harness.plugins import PluginContext, get_tool_config
-
-# HP LJ1020 固件加载脚本（每次打印前自动调用；不需要就改成空字符串）
-FIRMWARE_SCRIPT = "/usr/local/sbin/hplj1020-firmware"
-
-DEFAULT_ALLOWED_PATHS = ":".join([
-    str(Path.home() / "Documents"),
-    str(Path.home() / "Downloads"),
-    "/srv/octop/print",
-    "/tmp/octop-print",
-])
-
-ALLOWED_SUFFIXES = {
-    ".pdf", ".txt", ".md", ".markdown", ".ps",
-    ".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff", ".bmp", ".webp",
-    ".csv", ".json", ".log", ".html", ".htm",
-    ".odt", ".ods", ".odp", ".doc", ".docx",
-    ".xls", ".xlsx", ".ppt", ".pptx", ".rtf",
-}
-
-
-def _cfg():
-    try:
-        return get_tool_config("print_file") or {}
-    except Exception:
-        return {}
-
-
-def _printer_name():
-    return str(_cfg().get("default_printer") or os.environ.get("OCTOP_PRINTER_NAME") or "")
-
-
-def _allowed_paths():
-    raw = str(_cfg().get("allowed_paths") or DEFAULT_ALLOWED_PATHS)
-    out = []
-    for item in raw.split(":"):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            out.append(Path(item).expanduser().resolve())
-        except Exception:
-            continue
-    return out
-
-
-def _check_path(raw):
-    p = Path(str(raw).strip()).expanduser()
-    if not p.is_absolute():
-        raise ValueError("必须是绝对路径（或 ~/ 开头）：" + str(raw))
-    real = p.resolve(strict=True)          # 文件不存在会抛 FileNotFoundError
-    if not real.is_file():
-        raise ValueError("不是普通文件：" + str(real))
-    allowed = _allowed_paths()
-    if allowed and not any(real == b or b in real.parents for b in allowed):
-        raise ValueError("不在允许打印的目录内。允许：" + "、".join(str(a) for a in allowed))
-    if ALLOWED_SUFFIXES and real.suffix.lower() not in ALLOWED_SUFFIXES:
-        raise ValueError("不支持的文件类型：" + (real.suffix or "(无扩展名)"))
-    return real
-
-
-async def _run(cmd, timeout=60):
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return 124, "命令超时"
-    return proc.returncode or 0, (out or b"").decode("utf-8", "replace").strip()
-
-
-async def _ensure_firmware():
-    if not FIRMWARE_SCRIPT or not os.path.exists(FIRMWARE_SCRIPT):
-        return ""
-    rc, out = await _run(["sudo", "-n", FIRMWARE_SCRIPT], timeout=45)
-    return "" if rc else out
-
-
-async def list_printers():
-    """列出本机所有打印机、状态、默认打印机和待打印队列。"""
-    if not shutil.which("lpstat"):
-        return "本机没有 lpstat，CUPS 客户端未安装。"
-    _, a = await _run(["lpstat", "-p", "-d"])
-    _, b = await _run(["lpstat", "-o"])
-    return "=== 打印机 ===\n" + (a or "(空)") + "\n\n=== 待打印队列 ===\n" + (b or "(队列为空)")
-
-
-async def printer_status(printer: str = ""):
-    """查看指定打印机的详细状态。printer 留空则用默认打印机。"""
-    name = printer.strip() or _printer_name()
-    if not name:
-        return "未指定 printer，也没有配置默认打印机。先用 list_printers 查看。"
-    parts = []
-    for args in (["-p", name, "-l"], ["-v", name], ["-a", name]):
-        _, out = await _run(["lpstat", *args])
-        if out:
-            parts.append(out)
-    return "\n".join(parts) or ("查不到打印机 " + name + " 的信息。")
-
-
-async def print_file(path: str, printer: str = "", copies: int = 1,
-                     page_range: str = "", landscape: bool = False, media: str = "A4"):
-    """打印允许目录内的文件。
-
-    path: 文件绝对路径（必须在允许目录内）
-    printer: 打印机名，留空用默认
-    copies: 份数 1~20
-    page_range: 页码范围，如 "1-3"，留空为全部
-    landscape: 是否横向打印
-    media: 纸张，默认 A4
-    """
-    try:
-        real = _check_path(path)
-    except FileNotFoundError:
-        return "❌ 文件不存在：" + str(path)
-    except ValueError as exc:
-        return "❌ 拒绝打印：" + str(exc)
-
-    name = printer.strip() or _printer_name()
-    if not name:
-        return "❌ 未指定 printer，且没有配置默认打印机。"
-    try:
-        n = int(copies)
-    except Exception:
-        n = 1
-    n = max(1, min(n, 20))
-
-    fw = await _ensure_firmware()
-    cmd = ["lp", "-d", name, "-n", str(n), "-o", "media=" + media]
-    if landscape:
-        cmd += ["-o", "landscape"]
-    if page_range.strip():
-        cmd += ["-P", page_range.strip()]
-    cmd.append(str(real))
-
-    rc, out = await _run(cmd)
-    if rc:
-        return "❌ 打印失败：\n" + out
-    msg = ["✅ 已提交打印任务：" + real.name + " → " + name + "，" + str(n) + " 份"]
-    if page_range.strip():
-        msg.append("页码：" + page_range)
-    if landscape:
-        msg.append("方向：横向")
-    msg.append("CUPS 返回：" + out)
-    if fw:
-        msg.append("固件：" + fw)
-    msg.append("提示：LJ1020 较慢，等指示灯停闪再取纸。")
-    return "\n".join(msg)
-
-
-async def cancel_jobs(job_id: str = "", printer: str = ""):
-    """取消打印任务：给 job_id 取消单个；只给 printer 则清空该队列。"""
-    if job_id.strip():
-        rc, out = await _run(["cancel", job_id.strip()])
-        return ("✅ 已取消任务 " + job_id) if rc == 0 else ("❌ 取消失败：" + out)
-    name = printer.strip() or _printer_name()
-    if not name:
-        return "❌ 需要 job_id 或 printer 之一。"
-    rc, out = await _run(["cancel", "-a", name])
-    return ("✅ 已清空 " + name + " 的队列") if rc == 0 else ("❌ 取消失败：" + out)
-
-
-def setup(ctx: PluginContext) -> None:
-    ctx.tool("list_printers", list_printers,
-             description="列出本机所有打印机及其状态、默认打印机、待打印队列。")
-    ctx.tool("printer_status", printer_status,
-             description="查看指定打印机的详细状态。")
-    ctx.tool("print_file", print_file,
-             description="把本机某个文件送到 CUPS 打印。路径必须在允许目录内。",
-             config_fields=[
-                 {"name": "default_printer", "type": "text", "required": False},
-                 {"name": "allowed_paths", "type": "text", "required": False},
-             ])
-    ctx.tool("cancel_jobs", cancel_jobs,
-             description="取消一个打印任务或清空某台打印机的队列。")
-```
-
-> **三個常量要先看懂再跑：**
-> - `FIRMWARE_SCRIPT = "/usr/local/sbin/hplj1020-firmware"`：LJ1020 專屬；**新設備沒有這機型就改成 `""`**（`_ensure_firmware` 對缺檔直接回 `""`，不炸）。
-> - `DEFAULT_ALLOWED_PATHS = ~/Documents : ~/Downloads : /srv/octop/print : /tmp/octop-print`：`print_file` 只放行這些目錄（`allowed_paths` 參數可覆蓋）。
-> - `ALLOWED_SUFFIXES`：pdf/txt/md/圖片/csv/json/log/html/office 格式等；表外副後綴直接拒。
-
-> **配置分層（誰優先）**：「打到哪台」的解析順序＝**個人 per-tool 設定（`default_printer`）＞ 全域 env（`OCTOP_PRINTER_NAME`）＞ 皆無 → 回「未指定，先用 list_printers」**。`allowed_paths` 同理：per-tool 可覆蓋內建四目錄白名單。
+- **頂部常量**：`FIRMWARE_SCRIPT`（HP LaserJet 1020 專屬的打印前固件灌載掛鉤；其他機型把它設成 `""` 就跳過）、`DEFAULT_ALLOWED_PATHS`（允許打印的目錄白名單：`~/Documents : ~/Downloads : /srv/octop/print : /tmp/octop-print`）、`ALLOWED_SUFFIXES`（允許的文件副後綴白名單：pdf／圖片／office／文本等）。
+- **配置分層**：`get_tool_config`（個人層 per-tool config ＞ 全域 env）決定打到哪台機器——解析順序＝**個別 `default_printer` ＞ 全域 env `OCTOP_PRINTER_NAME` ＞ 皆無 → 回「未指定，先用 list_printers」**；`allowed_paths` 同理可被個別覆蓋。
+- **★ 安全護欄**：`_check_path()` 執行雙白名單（目錄＋副後綴），不在表內直接拒；打印前 `_ensure_firmware()` 經 `sudo -n` 灌固件（需免密 sudo，見第 8 節 Bug①）。
+- **4 個對外工具**（`list_printers` / `printer_status` / `print_file` / `cancel_jobs`）＋ 底部 `setup(ctx)` 註冊段。
 
 ---
 
@@ -435,15 +249,18 @@ octop agent reload <你的AGENT_ID>
 
 ---
 
-## 6. 端到端驗證（一條龍全綠腳本 printer-cups-verify-all.py）
+## 6. 端到端驗證（scripts/printer-cups-verify-all.py）
 
-裝完＋重載後，跑一次這條龍腳本：它直接 import 插件 `main.py`、**裸調 4 個 async 工具函數**（證 CUPS 打印鏈確活、不依賴 octop 是否已注入），逐項覆蓋 **T1 list_printers（列表＋預設機＋隊列）→ T2 printer_status（預設機詳情：狀態／設備 URI／accepting）→ T3 print_file（現場生成最小 1 頁 PDF、真鏈提交入隊、再用外部 `lpstat -o` 交叉核對隊列）→ T4 cancel_jobs（有殘留即清空省紙；已打完自然空亦計過）**；每步 ✅／❌ 附證據，全過＝**✅ 通過 N 項 · ❌ 失敗 0 項 / 🎉 全綠**、exit 0。
+裝完＋重載後，跑一次本倉庫的驗證腳本。它會**直接 import 插件 `main.py`、裸調那 4 個 async 工具函數**（證 CUPS 打印鏈確活、不依賴 octop 是否已注入），逐項覆蓋：
 
-跑法（出證目錄指到你想要的位置）：
+**T1 list_printers（列表＋預設機＋隊列）→ T2 printer_status（預設機詳情：狀態／設備 URI／accepting）→ T3 print_file（現場生成最小 1 頁 PDF、真鏈提交入隊、再用外部 `lpstat -o` 交叉核對隊列）→ T4 cancel_jobs（有殘留即清空省紙；已打完自然空亦計過）**
+
+每步 ✅／❌ 附證據；全過＝**✅ 通過 N 項 · ❌ 失敗 0 項 / 🎉 全綠**、exit 0。
 
 ```bash
-~/.octop/venv/bin/python printer-cups-verify-all.py /some/evidence_dir
-# 預期末行：✅ 通過 N 項 · ❌ 失敗 0 項 … 🎉 全綠！… 且 exit 0
+# 跑本倉庫的驗證腳本（出證目錄指到你想要的位置）
+python3 <repo>/scripts/printer-cups-verify-all.py /tmp/verify-out
+# 預期末行：✅ 通過 8 項 · ❌ 失敗 0 項 … 🎉 全綠！… 且 exit 0
 ```
 
 **本參考機實測輸出（供對照）：**
@@ -468,183 +285,6 @@ octop agent reload <你的AGENT_ID>
 看到「🎉 全綠！」＝CUPS 打印鏈（列／狀／打／撤）在你的新設備上都工作、**能用**了。
 
 > 為什麼驗證走「裸調函數」、不等 octop 注入？——它直打 CUPS／lp 真鏈，乾淨證明*打印鏈本身*工作，與「octop 有沒有把工具塞進對話」解耦，是最有力的排障第一手。octop 側可用性由第 5 步兩步重載的返回值保證。
-
-**驗證腳本全文**（存成 `printer-cups-verify-all.py` 放新設備即可跑；建議與本指引同歸檔）：
-
-```python
-#!/usr/bin/env python3
-# printer-cups 打印插件 · 一站式端到端验证（新设备装完直接跑，看全绿即成功）
-# 直接 import 插件 main.py、裸调 async 工具函数（证 CUPS 打印链活着，不依赖 octop 是否已注入）。
-# 覆盖：T1 list_printers(列表+队列) / T2 printer_status(预设机详情) /
-#       T3 print_file(生成最小PDF→真实入队, lpstat 交叉核对) / T4 cancel_jobs(清空残留省纸)。
-# 用法：  ~/.octop/venv/bin/python printer-cups-verify-all.py [out_dir]
-# 环境变量（新设备按实际调整）：
-#   OCTOP_PRINTER_NAME  预设打印机名（留空＝自动取 CUPS 系统预设机）
-#   PC_PLUGIN_DIR         插件目录（预设 ~/.octop/plugins/printer-cups）
-#   PC_BUDGET               总耗时预算秒数（预设 60）
-import os, sys, re, shlex, time, asyncio, importlib.util, subprocess
-
-try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-except Exception:
-    pass
-os.environ.setdefault("PYTHONUNBUFFERED", "1")
-
-WS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.expanduser("~"), ".octop", "printer-cups", "verify-out")
-os.makedirs(WS, exist_ok=True)
-
-BUDGET = float(os.environ.get("PC_BUDGET", "60"))
-t0 = time.time()
-def T():
-    return round(time.time() - t0, 2)
-N = [0]
-F = [0]
-def PASS(m):
-    N[0] += 1
-    print(f"  \u2705 [{T():6.1f}s] {m}", flush=True)
-def FAIL(m):
-    F[0] += 1
-    print(f"  \u274c [{T():6.1f}s] {m}", flush=True)
-def BUDGET_OVER(tag):
-    if time.time() - t0 > BUDGET:
-        print(f"\n  \u23f3 总耗时 {time.time()-t0:.0f}s > 预算 {BUDGET:.0f}s，剩余步跳过（{tag}）", flush=True)
-        return True
-    return False
-
-# ── 载入插件模块（与 lightpanda 验证同套路：直 import、不依赖 octop 注入）──
-PDIR = os.environ.get("PC_PLUGIN_DIR", os.path.expanduser("~/.octop/plugins/printer-cups"))
-spec = importlib.util.spec_from_file_location("pc_main_verify", f"{PDIR}/main.py")
-M = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(M)
-
-def _resolve_name():
-    """预设打印机名解析：env > CUPS 系统预设（lpstat -d）"""
-    n = (os.environ.get("OCTOP_PRINTER_NAME") or "").strip()
-    if n:
-        return n
-    try:
-        out = subprocess.run(["lpstat", "-d"], capture_output=True, text=True, timeout=10).stdout
-        m = re.search(r"default destination:\s*(\S+)", out)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return ""
-
-NAME = _resolve_name()
-print(f"[load] 插件模块载入自 {PDIR} ({T():.1f}s) · budget={BUDGET:.0f}s · 预设机={NAME or '(未设定)'} · 产物目录={WS}", flush=True)
-
-def sh(args, timeout=30):
-    """外部命令交叉核对（与插件走同一条 CUPS 链）"""
-    try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return p.returncode or 0, ((p.stdout or "") + (p.stderr or "")).strip()
-    except Exception as e:
-        return 255, str(e)
-
-def minimal_pdf(path):
-    """最小合法 1 页 PDF（零依赖；打印链冒烟专用，字体 Helvetica 内建）"""
-    stream = b"BT /F1 24 Tf 72 720 Td (printer-cups smoke test) Tj ET"
-    objs = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> /Contents 4 0 R >>\nendobj\n",
-        b"4 0 obj\n<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream\nendobj\n",
-        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-    ]
-    body = b"".join(objs)
-    offs, pos = [], 0
-    for o in objs:
-        offs.append(pos)
-        pos += len(o)
-    xref = b"xref\n0 6\n0000000000 65535 f \n"
-    for o in offs:
-        xref += b"%010d 00000 n \n" % o
-    head = b"%PDF-1.4\n"
-    trailer = b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(head) + len(body))
-    with open(path, "wb") as f:
-        f.write(head + body + xref + trailer)
-    assert open(path, "rb").read(5) == b"%PDF-"
-
-async def do(tag, fn, *a, **k):
-    """计时＋预算＋异常包装地跑一个 async 工具函数"""
-    if BUDGET_OVER(tag):
-        return None
-    ts = time.time()
-    try:
-        r = await fn(*a, **k)
-        PASS(f"{tag}: {time.time()-ts:.1f}s")
-        return r
-    except Exception as e:
-        FAIL(f"{tag}: {type(e).__name__}: {str(e)[:180]}")
-        return {"__err__": f"{type(e).__name__}: {e}"}
-
-async def suite():
-    # ── T1 list_printers：列表＋预设机＋队列 ──
-    st = await do("T1 list_printers", M.list_printers)
-    if st and "__err__" not in st:
-        with open(f"{WS}/t1-list.txt", "w") as f:
-            f.write(st)
-        okh = ("=== 打印机 ===" in st) and ("=== 待打印队列 ===" in st)
-        hp = re.search(r"printer\s+\S+\s+(idle|ready|accepting)", st) or re.search(r"printer\s+\S+", st)
-        if okh and bool(hp):
-            PASS(f"列表成功: {hp.group(0)!r} + 预设机/队段齐全")
-        else:
-            FAIL(f"列表异常: header_ok={okh} printer_line={bool(hp)}")
-
-    # ── T2 printer_status：预设机详情（URI/状态/accepting）──
-    if not BUDGET_OVER("T2"):
-        ps = await do("T2 printer_status", M.printer_status, NAME)
-        if ps and "__err__" not in ps:
-            with open(f"{WS}/t2-status.txt", "w") as f:
-                f.write(ps)
-            ok2 = (len(ps) > 10) and (("device for" in ps) or ("is idle" in ps) or ("accepting requests" in ps))
-            if ok2:
-                PASS(f"状态成功: {ps.splitlines()[0][:90]!r}")
-            else:
-                FAIL(f"状态内容不足: {ps[:120]!r}")
-
-    # ── T3 print_file：生成最小 PDF → 真实入队（lpstat 交叉核对）──
-    if not BUDGET_OVER("T3"):
-        pdfdir = os.path.join("/tmp", "octop-print")
-        os.makedirs(pdfdir, exist_ok=True)
-        pdf = os.path.join(pdfdir, "pc-smoke.pdf")
-        minimal_pdf(pdf)
-        pf = await do("T3 print_file", M.print_file, pdf, printer=NAME, copies=1)
-        if pf and "__err__" not in pf:
-            with open(f"{WS}/t3-print.txt", "w") as f:
-                f.write(pf)
-            ok3 = pf.lstrip().startswith("\u2705") and ("已提交打印任务" in pf)
-            _, qout = sh(["lpstat", "-o"] + ([NAME] if NAME else []))
-            if ok3:
-                qfirst = qout.splitlines()[0].strip() if qout.strip() else "(队列现空)"
-                PASS(f"入队成功: CUPS 受理 / 队列核对 {qfirst[:80]!r}")
-            else:
-                FAIL("提交失败:\n" + pf[:260])
-
-    # ── T4 cancel_jobs：清空残留任务（省纸；自然空也算过）──
-    if not BUDGET_OVER("T4"):
-        _, cout = sh(["lpstat", "-o"] + ([NAME] if NAME else []))
-        jobs = [l for l in cout.splitlines() if l.strip()]
-        if jobs:
-            cj = await do("T4 cancel_jobs", M.cancel_jobs, "", NAME)
-            if cj and "__err__" not in cj and ("\u2705" in cj or "已清空" in cj):
-                PASS(f"清队成功: {len(jobs)} 笔回收")
-            else:
-                FAIL(f"清队失败: {str(cj)[:140]!r}")
-        else:
-            PASS("队列自然为空（已打完/秒收）: 免清")
-
-    verdict = (N[0] > 0) and (F[0] == 0)
-    line = "\U0001f389 全绿！CUPS 打印链 list/status/print/cancel 四段全通" if verdict else "\u26a0\ufe0f 存在失败项，见上方各步"
-    print(f"\n═══════ 总判定 ═══════\n  \u2705 通过 {N[0]} 项 · \u274c 失败 {F[0]} 项 · 总耗时 {T():.1f}s\n  {line}", flush=True)
-    return verdict
-
-ok = asyncio.run(suite())
-print(f"[DONE] {'PASS' if ok else 'SOME_FAIL'} · {N[0]} 项通过 · 总耗时 {T():.1f}s")
-sys.exit(0 if ok else 1)
-```
 
 ---
 
@@ -739,3 +379,9 @@ lpstat -p -d && echo "CUPS OK"
 
 打出打印機列表＋系統預設機，再接一行 `CUPS OK`＝鏈沒壞。要進一步確認整份 octop 插件（那 4 個工具、真實入隊打印）端到端，再跑第 6 步的 `printer-cups-verify-all.py`。
 
+---
+
+## 授權與致謝
+
+- **CUPS** 本體為 **GPL-2.0-or-later**（見 OpenPrinting 官方倉庫）。本指引與插件程式碼僅為接入用途；HP LaserJet 1020 走 **foo2zjs** 驅動（GPL），隨包固件 `sihp1020.dl` 屬 HP。若要把這些隨你的產品分發給第三方，請自行評估 copyleft 條款。
+- 本倉庫的插件程式碼（`plugin/`、`scripts/`）可自由取用於你的 Octop 實例。
